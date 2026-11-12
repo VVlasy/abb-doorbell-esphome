@@ -3,7 +3,7 @@
 This is the ESPHome configuration pre-installed on the assembled boards sold by VVlasy.
 The hardware is Mat931's open-source [esp32-doorbell-bus-interface](https://github.com/Mat931/esp32-doorbell-bus-interface) (CERN-OHL-W v2).
 
-- **Quick Start Guide** (wiring, Wi-Fi, Home Assistant, finding your bus addresses): https://claude.ai/artifact/Xasmw7WDfpusf19srg8kjG
+- **Quick Start Guide** (wiring, Wi-Fi, Home Assistant, finding your bus addresses): [docs/ABB-Doorbell-Quick-Start-Guide.pdf](docs/ABB-Doorbell-Quick-Start-Guide.pdf)
 - **How the bus works and how to find your addresses:** [how_to_customize.md](https://github.com/Mat931/esp32-doorbell-bus-interface/blob/main/how_to_customize.md) in the hardware project
 
 ## Setting up a board
