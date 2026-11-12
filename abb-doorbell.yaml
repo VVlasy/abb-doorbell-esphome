@@ -1,0 +1,243 @@
+# ============================================================================
+# ABB Welcome / Busch-Welcome Doorbell Bus Interface — public firmware
+#
+# Hardware:  https://github.com/Mat931/esp32-doorbell-bus-interface  (CERN-OHL-W v2)
+# This file: https://github.com/VVlasy/abb-doorbell-esphome
+#
+# Factory flash (seller):  esptool --chip esp32 write-flash 0x0 firmware.factory.bin
+# One binary fits all units: every board names itself from its MAC address
+# (abb-doorbell-xxxxxx; Home Assistant shows it as "ABB Doorbell xxxxxx").
+#
+# First-time setup (buyer):
+#   1. Power the board from the bus. It opens an open Wi-Fi hotspot named
+#      "abb-doorbell-xxxxxx" (its device name).
+#   2. Join the hotspot. A captive portal opens (or browse to http://192.168.4.1)
+#      and asks for your home Wi-Fi. 2.4 GHz networks only.
+#   3. Home Assistant discovers the device (Settings -> Devices & services).
+#   4. The ESPHome Device Builder shows the device with an "Adopt" button.
+#      Adopting creates a small config that pulls this file as a package.
+#      Put your own values for the substitutions below into that config.
+#
+# Per-installation tuning:
+#   The bus addresses and the door-opener code below are PLACEHOLDERS and
+#   differ per system. Watch the "Doorbell Intercom" sensor (or the log on the
+#   device web page) while ringing the bell and pressing the door opener on
+#   your indoor station, then copy what you see into the substitutions of
+#   your adopted config, for example:
+#
+#     substitutions:
+#       indoor_station_address: "0x000110"
+#       outdoor_station_address: "0x000201"
+#       door_address: "0x000401"
+#       three_byte_address: "true"
+#       door_open_type: "0x0e"
+#       door_open_reply_type: "0x8e"
+#       door_open_code: "0x00, 0x00, 0x00"
+#
+#   Background: https://github.com/Mat931/esp32-doorbell-bus-interface/blob/main/how_to_customize.md
+# ============================================================================
+
+substitutions:
+  name: abb-doorbell
+  friendly_name: "ABB Doorbell"
+
+  # --- Bus addresses, hex, exactly as the "Doorbell Intercom" sensor shows them
+  indoor_station_address: "0x1001"    # your indoor station
+  outdoor_station_address: "0x2001"   # the outdoor station whose ring you want
+  door_address: "0x4001"              # the door lock / door controller
+  three_byte_address: "false"         # "true" when addresses have 6 hex digits
+
+  # --- Door opener: copy from the message your indoor station sends when you
+  #     press its door-opener button
+  door_open_type: "0x0d"              # message type, 0x0d or 0x0e
+  door_open_reply_type: "0x8d"        # the door's reply, 0x8d or 0x8e
+  door_open_code: "0xab, 0xcd, 0xef"  # the Data bytes, comma separated - REPLACE
+  unlock_time: "3s"                   # how long the door stays released
+
+  # --- Doorbell detection and call control (rarely need changing)
+  doorbell_outdoor_type: "0x01"       # outdoor -> indoor station while ringing
+  doorbell_indoor_type: "0x11"        # sent by the indoor station (floor bell)
+  end_call_type: "0x02"               # end call, stops the ringtone
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+    # (this board has a dual-core ESP32-WROOM-32E; the original design's
+    # ESP32-SOLO-1 would need CONFIG_FREERTOS_UNICORE: y here)
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  # Gives every sold unit a unique hostname and hotspot name (abb-doorbell-a1b2c3)
+  name_add_mac_suffix: true
+  project:
+    name: "victor.abb_doorbell"
+    version: "1.1.0"
+  on_boot:
+    - lock.template.publish:
+        id: front_door
+        state: LOCKED
+    - binary_sensor.template.publish:
+        id: doorbell_indoor
+        state: OFF
+    - binary_sensor.template.publish:
+        id: doorbell_outdoor
+        state: OFF
+
+# Lets the ESPHome Device Builder offer "Adopt" for this device. The adopted
+# config pulls this file as a package and overrides the substitutions.
+dashboard_import:
+  package_import_url: github://VVlasy/abb-doorbell-esphome/abb-doorbell.yaml@main
+  import_full_config: false
+
+wifi:
+  power_save_mode: none
+  # No credentials shipped: the fallback hotspot + captive portal handle setup
+  ap: {}
+
+captive_portal:
+
+# Wi-Fi provisioning over the serial/programming header (optional extra path)
+improv_serial:
+
+web_server:
+  port: 80
+
+logger:
+
+# No encryption key shipped, so the first connection from Home Assistant is
+# unencrypted. Adopting the device in the ESPHome Device Builder adds a key.
+api:
+
+ota:
+  - platform: esphome
+
+remote_transmitter:
+  pin: GPIO26
+  carrier_duty_percent: 100%
+  non_blocking: true
+
+remote_receiver:
+  pin:
+    number: GPIO25
+    mode:
+      input: True
+  dump: [abbwelcome]
+  filter: 8us
+  tolerance:
+    type: time
+    value: 26us
+  idle: 1500us
+  buffer_size: 15kB
+  rmt_symbols: 320
+  clock_resolution: 500000
+  on_abbwelcome:
+    then:
+      - lambda: "char buf[192]; x.format_to(buf); id(doorbell_intercom).publish_state(buf);"
+      - if:
+          condition:
+            and:
+              - lambda: "return (x.get_message_type() == ${door_open_reply_type});" # door confirms the unlock
+              - lambda: "return (x.get_source_address() == ${door_address});"
+          then:
+            - lock.template.publish:
+                id: front_door
+                state: UNLOCKING
+            - delay: ${unlock_time}
+            - lock.template.publish:
+                id: front_door
+                state: LOCKED
+      - if:
+          condition:
+            and:
+              - lambda: "return (x.get_message_type() == ${doorbell_indoor_type});" # doorbell indoor
+              - lambda: "return (x.get_source_address() == ${indoor_station_address});"
+          then:
+            - binary_sensor.template.publish:
+                id: doorbell_indoor
+                state: ON
+            - binary_sensor.template.publish:
+                id: doorbell_indoor
+                state: OFF
+      - if:
+          condition:
+            and:
+              - lambda: "return (x.get_message_type() == ${doorbell_outdoor_type});" # doorbell outdoor
+              - lambda: "return (x.get_source_address() == ${outdoor_station_address});"
+              - lambda: "return (x.get_destination_address() == ${indoor_station_address});"
+          then:
+            - binary_sensor.template.publish:
+                id: doorbell_outdoor
+                state: ON
+            - binary_sensor.template.publish:
+                id: doorbell_outdoor
+                state: OFF
+
+binary_sensor:
+  - platform: template
+    name: Doorbell indoor
+    id: doorbell_indoor
+    icon: mdi:bell
+    filters:
+      - delayed_off: 1s
+  - platform: template
+    name: Doorbell outdoor
+    id: doorbell_outdoor
+    icon: mdi:bell
+    filters:
+      - delayed_off: 1s
+
+sensor:
+  - platform: internal_temperature
+    name: "Internal Temperature"
+
+text_sensor:
+  - platform: template
+    name: "Doorbell Intercom" # shows raw bus messages for address discovery
+    id: doorbell_intercom
+    icon: mdi:bell-circle
+    update_interval: never
+
+lock:
+  - platform: template
+    name: "Front Door"
+    id: front_door
+    on_unlock:
+      - then:
+          - lock.template.publish:
+              id: front_door
+              state: LOCKED
+    lock_action:
+      - then:
+          - lock.template.publish:
+              id: front_door
+              state: LOCKED
+    unlock_action:
+      - then:
+          - remote_transmitter.transmit_abbwelcome:
+              source_address: ${indoor_station_address}
+              destination_address: ${door_address}
+              three_byte_address: ${three_byte_address}
+              message_type: ${door_open_type}
+              data: !lambda "return {${door_open_code}};"
+
+button:
+  - platform: restart
+    name: "Reboot"
+  - platform: safe_mode
+    name: "Reboot (Safe Mode)"
+  - platform: template
+    name: "Stop Doorbell"
+    on_press:
+      - remote_transmitter.transmit_abbwelcome:
+          source_address: ${indoor_station_address}
+          destination_address: ${outdoor_station_address}
+          three_byte_address: ${three_byte_address}
+          message_type: ${end_call_type}
+          data: [0x00]
+
+status_led:
+  pin:
+    number: GPIO2
+    ignore_strapping_warning: true
